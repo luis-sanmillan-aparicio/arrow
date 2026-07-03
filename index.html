@@ -1,0 +1,939 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Arrow Escape Puzzle</title>
+<style>
+  :root{
+    --navy:#0d1650;
+    --bg:#f4f5f8;
+    --panel:#ffffff;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    background:var(--bg);
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    padding:16px;
+    color:var(--navy);
+  }
+  h1{font-size:22px;margin:4px 0 2px;}
+  p.sub{margin:0 0 14px;color:#666;font-size:13.5px;text-align:center;max-width:520px;line-height:1.4;}
+  .panel{
+    background:var(--panel);
+    border-radius:22px;
+    padding:16px;
+    box-shadow:0 4px 20px rgba(0,0,0,0.08);
+    width:100%;
+    max-width:920px;
+  }
+  .controls{
+    display:flex;
+    gap:8px;
+    flex-wrap:wrap;
+    justify-content:center;
+    margin-bottom:10px;
+  }
+  button{
+    border:none;
+    background:var(--navy);
+    color:#fff;
+    padding:8px 14px;
+    border-radius:10px;
+    font-size:13px;
+    cursor:pointer;
+    font-weight:600;
+  }
+  button.secondary{background:#e7e9f5;color:var(--navy);}
+  #status{
+    text-align:center;
+    min-height:20px;
+    font-weight:700;
+    margin-bottom:8px;
+    font-size:14px;
+  }
+  #status.win{color:#22c55e;}
+  #status.warn{color:#e0552e;}
+  #counter{text-align:center;font-size:12px;color:#888;margin-bottom:6px;}
+  #boardwrap{width:100%;display:flex;justify-content:center;}
+  svg{display:block;width:100%;height:auto;max-width:900px;}
+  .piece{cursor:pointer;}
+  .piece.shake{animation:shake .32s;}
+  @keyframes shake{
+    0%,100%{transform:translateX(0);}
+    25%{transform:translateX(-3px);}
+    75%{transform:translateX(3px);}
+  }
+  footer{margin-top:14px;font-size:12px;color:#999;text-align:center;}
+</style>
+</head>
+<body>
+
+<h1>➡️ Arrow Escape</h1>
+<p class="sub">Toca una flecha para sacarla en la dirección exacta de su punta. Solo sale si el camino hasta el borde está totalmente libre (ni siquiera puede cruzar consigo misma). Vacía el tablero para ganar. Tablero de 30 × 30.</p>
+
+<div class="panel">
+  <div class="controls">
+    <button id="newBtn">🔀 Nuevo puzzle</button>
+    <button id="resetBtn" class="secondary">↩️ Reiniciar</button>
+  </div>
+  <div id="counter"></div>
+  <div id="status"></div>
+  <div id="boardwrap"><svg id="board"></svg></div>
+</div>
+
+<footer>Construido de dentro hacia fuera · casi todas las puntas empiezan bloqueadas, solo una o dos quedan libres</footer>
+
+<script>
+const svg = document.getElementById('board');
+const statusEl = document.getElementById('status');
+const counterEl = document.getElementById('counter');
+const SIZE = 30;
+const PAD = 4;
+
+const PALETTE = [
+  '#4a7dff','#22b8a3','#ff8a3d','#a855f7','#ef4d6b',
+  '#2fb355','#e0a300','#5b6bd6','#ff6fb0','#3aa0d6',
+  '#c2632b','#7c3aed','#0aa387','#e04f4f','#3d7dd8',
+  '#f2545b','#4c9f70','#c48f00','#6a5acd','#2b9bd6'
+];
+const DIRS = [
+  {dx:1,dy:0},{dx:-1,dy:0},{dx:0,dy:1},{dx:0,dy:-1}
+];
+
+let CELL = Math.max(14, Math.floor(880 / SIZE));
+let snakesInitial = [];
+let snakes = [];
+let occupied = [];
+
+const key = (r,c)=> r+','+c;
+const rnd = n => Math.floor(Math.random()*n);
+function inBounds(r,c){ return r>=0 && r<SIZE && c>=0 && c<SIZE; }
+function clamp(v,lo,hi){ return Math.max(lo, Math.min(hi, v)); }
+
+function shuffle(arr){
+  for(let i=arr.length-1;i>0;i--){
+    const j = rnd(i+1);
+    [arr[i],arr[j]]=[arr[j],arr[i]];
+  }
+  return arr;
+}
+
+// excludeSet: cells this specific search must never step on.
+// maxOwnerGrid/selfId (optional): cell is also forbidden if it belongs to the
+// exit corridor of a piece with a HIGHER id than selfId. This is what lets
+// fillLeftoverTails top up pieces with extra body cells without ever touching
+// a corridor that a later (still-locked) piece depends on staying blocked.
+function emptyNeighbors(cell, excludeSet, occ, maxOwnerGrid, selfId){
+  const opts = [];
+  for(const d of DIRS){
+    const nr = cell.r+d.dy, nc = cell.c+d.dx;
+    if(inBounds(nr,nc) && occ[nr][nc]===null && !excludeSet.has(key(nr,nc))){
+      if(maxOwnerGrid && maxOwnerGrid[nr][nc] > selfId) continue;
+      opts.push({r:nr,c:nc,d});
+    }
+  }
+  return opts;
+}
+
+// cells strictly between head and the board edge along dir (exclusive of head)
+function corridorCellsList(head, dir){
+  const cells = [];
+  let rr = head.r + dir.dy, cc = head.c + dir.dx;
+  while(inBounds(rr,cc)){
+    cells.push({r:rr,c:cc});
+    rr += dir.dy; cc += dir.dx;
+  }
+  return cells;
+}
+
+function geomDistToEdge(head, dir){
+  if(dir.dx===1) return SIZE-1-head.c;
+  if(dir.dx===-1) return head.c;
+  if(dir.dy===1) return SIZE-1-head.r;
+  return head.r;
+}
+
+// strict: blocked by ANY occupied cell (other pieces) OR by the piece's own body (selfSet)
+function corridorClearStrict(head, dir, occ, selfSet){
+  let rr = head.r + dir.dy, cc = head.c + dir.dx;
+  while(inBounds(rr,cc)){
+    if(occ[rr][cc] !== null) return false;
+    if(selfSet && selfSet.has(key(rr,cc))) return false;
+    rr += dir.dy; cc += dir.dx;
+  }
+  return true;
+}
+
+// Grow one arrow: self-avoiding walk with backtracking. Direction is ALWAYS the
+// last move's direction (never chosen independently). Unlike a plain greedy walk,
+// this explores multiple branches and PREFERS the branch with the longest clear
+// exit corridor (gd = geometric distance to the edge), only settling for a short
+// one (gd 0-2, which can never be blocked by a later piece) when nothing better
+// is reachable. This keeps growth robust on a crowded board and keeps the number
+// of "permanently free" tips low, which is what makes the chained blocking below
+// actually work.
+const GOOD_GD = 3;
+const GROW_CALL_BUDGET = 2500;
+function growPiece(start, occ, maxLen){
+  let calls = 0;
+  function rec(path, visited, dir){
+    calls++;
+    if(calls > GROW_CALL_BUDGET){
+      if(path.length >= 2){
+        const head = path[path.length-1];
+        if(corridorClearStrict(head, dir, occ, visited)) return { cells: path.slice(), dir, gd: geomDistToEdge(head,dir) };
+      }
+      return null;
+    }
+    const head = path[path.length-1];
+    let best = null;
+    if(path.length >= 2 && corridorClearStrict(head, dir, occ, visited)){
+      best = { cells: path.slice(), dir, gd: geomDistToEdge(head,dir) };
+      if(best.gd >= GOOD_GD){
+        const stopProb = clamp(best.gd / (SIZE*0.6), 0.12, 0.85);
+        if(path.length >= maxLen || Math.random() < stopProb) return best;
+      }
+    }
+    if(path.length >= maxLen) return best;
+
+    let neighbors = shuffle(emptyNeighbors(head, visited, occ));
+    if(dir){
+      const idx = neighbors.findIndex(n => n.d.dx===dir.dx && n.d.dy===dir.dy);
+      if(idx>=0 && Math.random() < 0.65){
+        const [same] = neighbors.splice(idx,1);
+        neighbors.unshift(same);
+      }
+    }
+    for(const n of neighbors){
+      path.push({r:n.r, c:n.c});
+      visited.add(key(n.r,n.c));
+      const result = rec(path, visited, n.d);
+      path.pop();
+      visited.delete(key(n.r,n.c));
+      if(result && (!best || result.gd > best.gd)){
+        best = result;
+        if(best.gd >= GOOD_GD) break;
+      }
+    }
+    return best;
+  }
+  const r = rec([start], new Set([key(start.r,start.c)]), null);
+  return r ? { cells: r.cells, dir: r.dir } : null;
+}
+
+function pickStartCell(occ){
+  const cx = (SIZE-1)/2, cy = (SIZE-1)/2;
+  const emptyCells = [];
+  for(let r=0;r<SIZE;r++) for(let c=0;c<SIZE;c++) if(occ[r][c]===null) emptyCells.push({r,c});
+  if(emptyCells.length === 0) return null;
+  emptyCells.sort((a,b)=>{
+    const da = (a.r-cy)*(a.r-cy)+(a.c-cx)*(a.c-cx);
+    const db = (b.r-cy)*(b.r-cy)+(b.c-cx)*(b.c-cx);
+    return da-db;
+  });
+  if(Math.random() < 0.75){
+    const pool = Math.max(1, Math.ceil(emptyCells.length*0.15));
+    return emptyCells[rnd(pool)];
+  }
+  return emptyCells[rnd(emptyCells.length)];
+}
+
+// Like pickStartCell, but biased toward a given anchor point instead of the
+// board center. Used to grow a fresh piece with good elbow-room near a target
+// we're about to block, rather than starting cramped inside a 1-wide corridor.
+function pickStartNear(occ, anchor){
+  const emptyCells = [];
+  for(let r=0;r<SIZE;r++) for(let c=0;c<SIZE;c++) if(occ[r][c]===null) emptyCells.push({r,c});
+  if(emptyCells.length === 0) return null;
+  emptyCells.sort((a,b)=>{
+    const da = (a.r-anchor.r)*(a.r-anchor.r)+(a.c-anchor.c)*(a.c-anchor.c);
+    const db = (b.r-anchor.r)*(b.r-anchor.r)+(b.c-anchor.c)*(b.c-anchor.c);
+    return da-db;
+  });
+  const pool = Math.max(1, Math.ceil(emptyCells.length*0.25));
+  return emptyCells[rnd(Math.min(pool, emptyCells.length))];
+}
+
+// Shortest-path BFS through currently-empty cells, from `anchor` to any cell
+// in `targetSet`, skipping any cell `forbidden` rejects. Returns the path in
+// order from (just past anchor) to (the cell inside targetSet), or null.
+function findConnectingPath(anchor, occ, forbidden, targetSet, maxSteps){
+  const anchorKey = key(anchor.r, anchor.c);
+  const visited = new Set([anchorKey]);
+  const cameFrom = new Map();
+  let queue = [anchor];
+  let steps = 0;
+  while(queue.length && steps < maxSteps){
+    steps++;
+    const next = [];
+    for(const cell of queue){
+      for(const d of DIRS){
+        const nr = cell.r+d.dy, nc = cell.c+d.dx;
+        if(!inBounds(nr,nc)) continue;
+        const k = key(nr,nc);
+        if(visited.has(k)) continue;
+        if(occ[nr][nc] !== null) continue;
+        if(forbidden(nr,nc)) continue;
+        visited.add(k);
+        cameFrom.set(k, key(cell.r,cell.c));
+        if(targetSet.has(k)){
+          const path = [{r:nr,c:nc}];
+          let curKey = key(cell.r,cell.c);
+          while(curKey !== anchorKey){
+            const [cr,cc] = curKey.split(',').map(Number);
+            path.unshift({r:cr,c:cc});
+            curKey = cameFrom.get(curKey);
+          }
+          return path;
+        }
+        next.push({r:nr,c:nc});
+      }
+    }
+    queue = next;
+  }
+  return null;
+}
+
+// --- Board construction --------------------------------------------------
+// Builds the puzzle piece by piece, starting at the center and always working
+// on whichever piece(s) are currently "available" (exit corridor fully clear):
+//   1. Grow a brand-new piece with plenty of elbow room near that target.
+//   2. Connect the new piece's tail to the target's corridor with a short
+//      walk through empty cells, which occupies one of those corridor cells
+//      and locks the target.
+//   3. The new piece itself becomes the (single) newly available piece, and
+//      the loop repeats on it.
+// Because a target is only ever touched by pieces built AFTER it, and a piece
+// never blocks its own corridor, this can never create a deadlock: the very
+// last piece placed always has a fully open corridor, so the board is always
+// solvable by construction, and only its rare "dead end" siblings (where no
+// nearby piece could be connected) add a second or third simultaneously-open
+// tip.
+function buildChain(occ, maxLen){
+  const pieces = [];
+  let idc = 0;
+  function place(cells, dir){
+    const id = idc++;
+    for(const c of cells) occ[c.r][c.c] = id;
+    const piece = {id, cells, dir};
+    pieces.push(piece);
+    return piece;
+  }
+
+  const centerOpts = shuffle([
+    {r:SIZE/2-1,c:SIZE/2-1},{r:SIZE/2-1,c:SIZE/2},
+    {r:SIZE/2,c:SIZE/2-1},{r:SIZE/2,c:SIZE/2}
+  ]);
+  let first = null;
+  for(const s of centerOpts){
+    const g = growPiece(s, occ, maxLen);
+    if(g){ first = g; break; }
+  }
+  if(!first){
+    const s = pickStartCell(occ);
+    if(s) first = growPiece(s, occ, maxLen);
+  }
+  if(!first) return pieces;
+
+  let available = [ place(first.cells, first.dir) ];
+
+  const maxOuter = SIZE*SIZE*6;
+  let outer = 0;
+  while(outer < maxOuter){
+    outer++;
+
+    const blockable = shuffle(available.filter(p=>{
+      const head = p.cells[p.cells.length-1];
+      return corridorCellsList(head, p.dir).length > 0;
+    }));
+
+    let didBlock = false;
+    let newPiece = null;
+    let targetPiece = null;
+
+    for(const t of blockable){
+      const head = t.cells[t.cells.length-1];
+      const targetSet = new Set(corridorCellsList(head, t.dir).map(c=>key(c.r,c.c)));
+      let connected = false;
+      for(let attempt=0; attempt<4 && !connected; attempt++){
+        const s = pickStartNear(occ, head);
+        if(!s) break;
+        const g = growPiece(s, occ, maxLen);
+        if(!g) continue;
+
+        const tentativeId = idc;
+        for(const c of g.cells) occ[c.r][c.c] = tentativeId;
+        const ownCorridorSet = new Set(corridorCellsList(g.cells[g.cells.length-1], g.dir).map(c=>key(c.r,c.c)));
+        const forbidden = (r,c) => ownCorridorSet.has(key(r,c));
+        const path = findConnectingPath(g.cells[0], occ, forbidden, targetSet, SIZE*SIZE);
+
+        if(path){
+          for(const c of path) occ[c.r][c.c] = tentativeId;
+          newPiece = place([...path.slice().reverse(), ...g.cells], g.dir);
+          targetPiece = t;
+          connected = true;
+        } else {
+          for(const c of g.cells) occ[c.r][c.c] = null;
+        }
+      }
+      if(connected){ didBlock = true; break; }
+    }
+
+    if(!didBlock){
+      const fresh = pickStartCell(occ);
+      if(!fresh) break;
+      const g = growPiece(fresh, occ, maxLen);
+      if(!g){ occ[fresh.r][fresh.c] = -1; continue; }
+      newPiece = place(g.cells, g.dir);
+      targetPiece = null;
+    }
+
+    if(targetPiece) available = available.filter(p=>p!==targetPiece);
+    available = available.filter(p=>{
+      const head = p.cells[p.cells.length-1];
+      return corridorClearStrict(head, p.dir, occ, null);
+    });
+    available.push(newPiece);
+  }
+
+  for(let r=0;r<SIZE;r++) for(let c=0;c<SIZE;c++) if(occ[r][c]===-1) occ[r][c]=null;
+  return pieces;
+}
+
+// Max piece-id whose exit corridor covers each cell (or -1). Used so leftover
+// filling never nibbles into a corridor that a still-locked piece needs kept
+// clear, and never lets an older piece accidentally seal off a newer one.
+function computeMaxCorridorOwner(pieces){
+  const grid = Array.from({length:SIZE}, ()=> Array(SIZE).fill(-1));
+  for(const p of pieces){
+    const head = p.cells[p.cells.length-1];
+    const corridor = corridorCellsList(head, p.dir);
+    for(const c of corridor){
+      if(p.id > grid[c.r][c.c]) grid[c.r][c.c] = p.id;
+    }
+  }
+  return grid;
+}
+
+// Extend the TAIL (opposite end from the arrow) into leftover empty cells,
+// never stepping onto this piece's own corridor, and never onto a corridor
+// owned by a higher-id piece (so a currently-open tip can't get re-sealed by
+// accident here).
+function fillLeftoverTails(pieces, occ){
+  const ownerGrid = computeMaxCorridorOwner(pieces);
+  let improved = true;
+  let guard = 0;
+  while(improved && guard < 300){
+    improved = false; guard++;
+    shuffle(pieces);
+    for(const p of pieces){
+      const head = p.cells[p.cells.length-1];
+      const selfCorridor = new Set(corridorCellsList(head, p.dir).map(c=>key(c.r,c.c)));
+      let tail = p.cells[0];
+      const inPiece = new Set(p.cells.map(c=>key(c.r,c.c)));
+      while(true){
+        const opts = emptyNeighbors(tail, new Set([...inPiece, ...selfCorridor]), occ, ownerGrid, p.id);
+        if(opts.length === 0) break;
+        const next = opts[rnd(opts.length)];
+        p.cells.unshift({r:next.r, c:next.c});
+        inPiece.add(key(next.r,next.c));
+        occ[next.r][next.c] = p.id;
+        tail = {r:next.r, c:next.c};
+        improved = true;
+      }
+    }
+  }
+}
+
+// Devuelve las celdas ortogonalmente vecinas de `cell` que están dentro de `set`
+// (un Set de claves "r,c"). Solo movimientos rectos (arriba/abajo/izq/dcha),
+// nunca en diagonal.
+function neighborsInSet(cell, set){
+  const result = [];
+  for(const d of DIRS){
+    const nr = cell.r+d.dy, nc = cell.c+d.dx;
+    const k = key(nr,nc);
+    if(set.has(k)) result.push({r:nr, c:nc, k});
+  }
+  return result;
+}
+
+// Descompone un hueco (lista de celdas conectadas ortogonalmente) en una o
+// varias cadenas ("piezas"), cada una formada por pasos estrictamente
+// ortogonales (nunca oblicuos) y sin repetir celdas. Cuando el hueco no se
+// puede recorrer entero con una sola línea (p.ej. forma en cruz, en T, o con
+// ramificaciones), se generan varias líneas más cortas en su lugar — nunca se
+// "salta" a una celda no adyacente para forzar una única cadena.
+//
+// Heurística: en cada paso se continúa hacia el vecino libre con MENOS
+// vecinos libres restantes (para consumir antes los "callejones sin salida"
+// y así dejar el resto del hueco lo más recorrible posible). Al agotar los
+// vecinos de la cadena actual, se cierra esa pieza y se empieza otra con las
+// celdas que queden, priorizando como nuevo inicio la celda con menos vecinos
+// libres restantes (normalmente el extremo de una ramificación).
+function decomposeIntoPaths(comp){
+  const remaining = new Set(comp.map(c=>key(c.r,c.c)));
+  const cellByKey = new Map(comp.map(c=>[key(c.r,c.c), c]));
+
+  function degree(k){
+    return neighborsInSet(cellByKey.get(k), remaining).length;
+  }
+
+  const paths = [];
+  while(remaining.size > 0){
+    // Elige el punto de partida: la celda con menos vecinos libres restantes
+    // (idealmente 0 o 1, un extremo natural), para no dejar cabos sueltos.
+    // Cuando hay empate, se elige al azar entre las candidatas: esto es lo
+    // que permite que reintentar la generación produzca descomposiciones
+    // distintas para el mismo hueco.
+    let startCandidates = [], startDeg = Infinity;
+    for(const k of remaining){
+      const d = degree(k);
+      if(d < startDeg){ startDeg = d; startCandidates = [k]; }
+      else if(d === startDeg){ startCandidates.push(k); }
+    }
+    const startKey = startCandidates[rnd(startCandidates.length)];
+    let current = cellByKey.get(startKey);
+    remaining.delete(startKey);
+    const path = [current];
+
+    while(true){
+      const nbrs = neighborsInSet(current, remaining);
+      if(nbrs.length === 0) break;
+      let bestCandidates = [], bestDeg = Infinity;
+      for(const n of nbrs){
+        const d = degree(n.k);
+        if(d < bestDeg){ bestDeg = d; bestCandidates = [n]; }
+        else if(d === bestDeg){ bestCandidates.push(n); }
+      }
+      const best = bestCandidates[rnd(bestCandidates.length)];
+      remaining.delete(best.k);
+      current = {r:best.r, c:best.c};
+      path.push(current);
+    }
+    paths.push(path);
+  }
+
+  // Ninguna pieza puede consistir en "solo la punta" (una sola celda sin
+  // línea). Si quedó alguna cadena de longitud 1, se pega al extremo de otra
+  // cadena vecina (si es ortogonalmente adyacente a su cabeza o su cola),
+  // convirtiéndose en parte de esa línea en vez de una pieza propia.
+  let mergedSomething = true;
+  while(mergedSomething){
+    mergedSomething = false;
+    for(let i=paths.length-1; i>=0; i--){
+      if(paths[i].length !== 1) continue;
+      const lone = paths[i][0];
+      let merged = false;
+      for(let j=0; j<paths.length; j++){
+        if(j === i) continue;
+        const other = paths[j];
+        const head = other[0], tail = other[other.length-1];
+        if(Math.abs(head.r-lone.r)+Math.abs(head.c-lone.c) === 1){
+          other.unshift(lone);
+          merged = true;
+        } else if(Math.abs(tail.r-lone.r)+Math.abs(tail.c-lone.c) === 1){
+          other.push(lone);
+          merged = true;
+        }
+        if(merged) break;
+      }
+      if(merged){
+        paths.splice(i,1);
+        mergedSomething = true;
+      }
+    }
+  }
+
+  return paths;
+}
+
+// La picardia: rellena los huecos que aún queden vacíos tras fillLeftoverTails.
+// Cada hueco (grupo de celdas vacías conectadas entre sí) se localiza con un
+// flood-fill y luego se descompone en una o varias cadenas ortogonales
+// mediante decomposeIntoPaths — una sola línea cuando el hueco lo permite,
+// varias líneas más cortas cuando la forma del hueco lo exige (nunca una
+// línea que salte a una celda no adyacente, y nunca una pieza de una sola
+// celda). Cada cadena resultante se convierte en una pieza con su propia
+// flecha. Se ejecuta ANTES de analyzeSolve, para que estas piezas de relleno
+// formen parte del cálculo de resolubilidad y del tablero final.
+function rellenarHuecos(pieces, occ){
+  let idc = pieces.length ? Math.max(...pieces.map(p=>p.id)) + 1 : 0;
+  const visited = Array.from({length:SIZE}, ()=> Array(SIZE).fill(false));
+
+  for(let r=0;r<SIZE;r++){
+    for(let c=0;c<SIZE;c++){
+      if(occ[r][c] !== null || visited[r][c]) continue;
+
+      // Flood-fill: recoge todas las celdas vacías conectadas (el hueco entero).
+      const comp = [];
+      const stack = [{r,c}];
+      visited[r][c] = true;
+      while(stack.length){
+        const cur = stack.pop();
+        comp.push(cur);
+        for(const d of DIRS){
+          const nr = cur.r+d.dy, nc = cur.c+d.dx;
+          if(inBounds(nr,nc) && occ[nr][nc]===null && !visited[nr][nc]){
+            visited[nr][nc] = true;
+            stack.push({r:nr,c:nc});
+          }
+        }
+      }
+
+      // Descompone el hueco en una o varias cadenas ortogonales válidas.
+      const subPaths = decomposeIntoPaths(comp);
+
+      for(const ordered of subPaths){
+        // Caso especial: una cadena de una sola celda (p.ej. un hueco que
+        // desde el principio era de 1 celda, rodeado por los 4 lados de
+        // celdas ya ocupadas). Esa celda NUNCA puede ser una pieza propia
+        // resoluble: cualquier dirección de flecha choca de inmediato con un
+        // vecino ocupado. En vez de crearla como pieza suelta ("solo la
+        // punta"), se pega al extremo de una pieza YA colocada y adyacente
+        // (a su cola, sin tocar su flecha; o si no, a su cabeza, pasando a
+        // ser ella la nueva punta con una dirección recalculada).
+        if(ordered.length === 1){
+          const cell = ordered[0];
+          let attached = false;
+
+          // Intento 1: la celda es adyacente a la COLA de una pieza ya
+          // colocada -> se añade delante, sin tocar la flecha de esa pieza.
+          for(const d of DIRS){
+            const nr = cell.r+d.dy, nc = cell.c+d.dx;
+            if(!inBounds(nr,nc)) continue;
+            const ownerId = occ[nr][nc];
+            if(ownerId === null) continue;
+            const piece = pieces.find(p=>p.id===ownerId);
+            if(!piece) continue;
+            const tail = piece.cells[0];
+            if(tail.r===nr && tail.c===nc){
+              piece.cells.unshift(cell);
+              occ[cell.r][cell.c] = piece.id;
+              attached = true;
+              break;
+            }
+          }
+
+          // Intento 2: la celda es adyacente a la CABEZA (la flecha) de una
+          // pieza ya colocada -> esa celda pasa a ser la nueva punta, con
+          // una dirección recalculada (preferiblemente con corredor libre).
+          if(!attached){
+            for(const d of DIRS){
+              const nr = cell.r+d.dy, nc = cell.c+d.dx;
+              if(!inBounds(nr,nc)) continue;
+              const ownerId = occ[nr][nc];
+              if(ownerId === null) continue;
+              const piece = pieces.find(p=>p.id===ownerId);
+              if(!piece) continue;
+              const head = piece.cells[piece.cells.length-1];
+              if(head.r===nr && head.c===nc){
+                const selfSet = new Set(piece.cells.map(c=>key(c.r,c.c)));
+                selfSet.add(key(cell.r,cell.c));
+                const dirsShuffled = shuffle(DIRS.slice());
+                let newDir = piece.dir;
+                for(const dd of dirsShuffled){
+                  if(corridorClearStrict(cell, dd, occ, selfSet)){ newDir = dd; break; }
+                }
+                piece.cells.push(cell);
+                piece.dir = newDir;
+                occ[cell.r][cell.c] = piece.id;
+                attached = true;
+                break;
+              }
+            }
+          }
+
+          if(attached) continue;
+          // Si de verdad no hay ninguna pieza vecina a la que pegarse (caso
+          // extremo), sigue el flujo normal de abajo como último recurso.
+        }
+
+        // Elige dirección de la flecha (una por cadena).
+        const head = ordered[ordered.length-1];
+        const selfSet = new Set(ordered.map(cell=>key(cell.r,cell.c)));
+        const dirsShuffled = shuffle(DIRS.slice());
+        let chosenDir = dirsShuffled[0];
+        for(const d of dirsShuffled){
+          if(corridorClearStrict(head, d, occ, selfSet)){
+            chosenDir = d;
+            break;
+          }
+        }
+
+        const id = idc++;
+        for(const cell of ordered) occ[cell.r][cell.c] = id;
+        pieces.push({ id, cells: ordered, dir: chosenDir });
+      }
+    }
+  }
+}
+
+// Simulates solving the board layer by layer (like topological sort): at each
+// step, every piece with a fully-clear corridor is removed at once. Returns
+// whether the board can be fully cleared, and the largest number of pieces
+// that were ever simultaneously clickable — the real difficulty measure we
+// optimize for (lower = harder, 1 is the theoretical best).
+function analyzeSolve(pieces){
+  const occ = Array.from({length:SIZE}, ()=> Array(SIZE).fill(null));
+  const list = pieces.map(p=>({id:p.id, cells:p.cells.slice(), dir:p.dir}));
+  for(const p of list) for(const c of p.cells) occ[c.r][c.c] = p.id;
+
+  let remaining = list;
+  let maxWidth = 0;
+  while(remaining.length){
+    const avail = remaining.filter(p => corridorClearStrict(p.cells[p.cells.length-1], p.dir, occ, null));
+    if(avail.length === 0) return { solvable:false, maxWidth: Infinity };
+    if(avail.length > maxWidth) maxWidth = avail.length;
+    for(const p of avail) for(const c of p.cells) occ[c.r][c.c] = null;
+    const availIds = new Set(avail.map(p=>p.id));
+    remaining = remaining.filter(p => !availIds.has(p.id));
+  }
+  return { solvable:true, maxWidth };
+}
+
+// Simulates solving layer by layer like analyzeSolve, but when a layer would
+// otherwise deadlock (no piece has a clear corridor), it tries to REPAIR the
+// situation: for each still-stuck piece, check whether any of its OTHER 3
+// directions has a fully clear corridor right now. If so, reassign the arrow
+// to that direction and keep going. This is done with full knowledge of the
+// completed board (not the partial information available while the filler
+// pieces from rellenarHuecos were being placed), so it can fix the arbitrary
+// direction choices that placement-time greediness can't always get right.
+// Mutates p.dir on the pieces it's given, so callers should pass a
+// deep-cloned piece list they're OK with being adjusted.
+function solveWithRepair(pieces){
+  const occ = Array.from({length:SIZE}, ()=> Array(SIZE).fill(null));
+  for(const p of pieces) for(const c of p.cells) occ[c.r][c.c] = p.id;
+
+  let remaining = pieces.slice();
+  let maxWidth = 0;
+
+  while(remaining.length){
+    let avail = remaining.filter(p => corridorClearStrict(p.cells[p.cells.length-1], p.dir, occ, null));
+
+    if(avail.length === 0){
+      let repaired = false;
+      for(const p of remaining){
+        const head = p.cells[p.cells.length-1];
+        for(const d of DIRS){
+          if(d.dx===p.dir.dx && d.dy===p.dir.dy) continue;
+          if(corridorClearStrict(head, d, occ, null)){
+            p.dir = d;
+            repaired = true;
+            break;
+          }
+        }
+        if(repaired) break;
+      }
+      if(!repaired) return { solvable:false, maxWidth: Infinity };
+      avail = remaining.filter(p => corridorClearStrict(p.cells[p.cells.length-1], p.dir, occ, null));
+      if(avail.length === 0) return { solvable:false, maxWidth: Infinity };
+    }
+
+    if(avail.length > maxWidth) maxWidth = avail.length;
+    for(const p of avail) for(const c of p.cells) occ[c.r][c.c] = null;
+    const availIds = new Set(avail.map(p=>p.id));
+    remaining = remaining.filter(p => !availIds.has(p.id));
+  }
+  return { solvable:true, maxWidth };
+}
+
+function countFilled(occ){
+  let n=0;
+  for(let r=0;r<SIZE;r++) for(let c=0;c<SIZE;c++) if(occ[r][c]!==null) n++;
+  return n;
+}
+
+function cloneOcc(occ){
+  return occ.map(row => row.slice());
+}
+
+function deepClonePieces(pieces){
+  return pieces.map(p=>({id:p.id, cells:p.cells.map(c=>({r:c.r,c:c.c})), dir:{...p.dir}}));
+}
+
+function generateBoard(){
+  // 30x30 has ~900 cells, so the backtracking search is expensive: keep
+  // maxLen modest and try only one attempt so this stays fast (~1-3s)
+  // instead of the 10-attempt search that made large boards take 30s+
+  // and left the page blank while the script was still blocking.
+  const maxLen = Math.max(6, Math.floor(SIZE*0.45));
+
+  statusEl.textContent = 'Generando puzzle...';
+  statusEl.className = '';
+  svg.innerHTML = '';
+  counterEl.textContent = '';
+
+  // Defer the heavy computation one tick so the browser can paint the
+  // "Generando puzzle..." message before the main thread gets busy.
+  setTimeout(()=>{
+    // buildChain gives solvability-by-construction for the "core" chain,
+    // but rellenarHuecos's filler pieces don't carry that same proof (their
+    // direction is picked greedily with partial information). So every
+    // candidate board is checked with solveWithRepair, which simulates the
+    // full solve and repairs directions where it safely can. If a candidate
+    // still comes back unsolvable, we don't ship it — we keep generating
+    // (cheap hole refills first, a fresh base board if that's not enough)
+    // until we get one that's CONFIRMED solvable, bounded by a time budget
+    // so this can never hang indefinitely.
+    const FILL_ATTEMPTS_PER_BASE = 15;
+    const TIME_BUDGET_MS = 12000;
+    const startTime = Date.now();
+    let best = null;
+
+    while(Date.now() - startTime < TIME_BUDGET_MS){
+      const occBase = Array.from({length:SIZE}, ()=> Array(SIZE).fill(null));
+      const piecesBase = buildChain(occBase, maxLen);
+      if(piecesBase.length === 0) continue;
+      fillLeftoverTails(piecesBase, occBase);
+
+      for(let fillTry=0; fillTry<FILL_ATTEMPTS_PER_BASE; fillTry++){
+        const occTry = cloneOcc(occBase);
+        const piecesTry = deepClonePieces(piecesBase);
+        rellenarHuecos(piecesTry, occTry);
+        // solveWithRepair mutates piecesTry's directions to fix any stuck
+        // pieces it can, using full knowledge of the completed board.
+        const analysis = solveWithRepair(piecesTry);
+        const ratio = countFilled(occTry) / (SIZE*SIZE);
+        const width = analysis.solvable ? analysis.maxWidth : Infinity;
+        const better = !best
+          || (analysis.solvable && !best.solvable)
+          || (analysis.solvable === best.solvable && (width < best.width || (width === best.width && ratio > best.ratio)));
+        if(better){
+          best = { pieces: deepClonePieces(piecesTry), width, ratio, solvable: analysis.solvable };
+        }
+        // As soon as we have a confirmed-solvable board, that's the bar
+        // that matters most — a slightly easier puzzle beats burning the
+        // whole time budget chasing a marginally harder solvable one.
+        if(best.solvable) break;
+        if(Date.now() - startTime > TIME_BUDGET_MS) break;
+      }
+      if(best && best.solvable) break;
+    }
+
+    if(!best){
+      const occ = Array.from({length:SIZE}, ()=> Array(SIZE).fill(null));
+      const pieces = buildChain(occ, maxLen);
+      fillLeftoverTails(pieces, occ);
+      rellenarHuecos(pieces, occ);
+      const analysis = solveWithRepair(pieces);
+      best = { pieces: deepClonePieces(pieces), width: analysis.solvable ? analysis.maxWidth : Infinity, ratio: countFilled(occ)/(SIZE*SIZE), solvable: analysis.solvable };
+    }
+
+    // best.solvable should be true in the overwhelming majority of cases now;
+    // it's left visible on the object in case it's ever useful for debugging.
+    occupied = Array.from({length:SIZE}, ()=> Array(SIZE).fill(null));
+    for(const p of best.pieces) for(const c of p.cells) occupied[c.r][c.c] = p.id;
+
+    snakesInitial = best.pieces.map((p,i)=>({...p, color: PALETTE[i % PALETTE.length]}));
+    snakes = snakesInitial.map(s=>({...s, cells:[...s.cells]}));
+    statusEl.textContent = '';
+    statusEl.className = '';
+    render();
+  }, 10);
+}
+
+function canRemove(snake){
+  const head = snake.cells[snake.cells.length-1];
+  return corridorClearStrict(head, snake.dir, occupied, null);
+}
+
+function cellPos(cell){
+  return { x: PAD + cell.c*CELL + CELL/2, y: PAD + cell.r*CELL + CELL/2 };
+}
+
+function arrowPolygon(mx,my,dx,dy,size){
+  const len = Math.hypot(dx,dy) || 1;
+  const ux = dx/len, uy = dy/len;
+  const px = -uy, py = ux;
+  const tipX = mx + ux*size, tipY = my + uy*size;
+  const b1x = mx - ux*size*0.55 + px*size*0.55, b1y = my - uy*size*0.55 + py*size*0.55;
+  const b2x = mx - ux*size*0.55 - px*size*0.55, b2y = my - uy*size*0.55 - py*size*0.55;
+  return `${tipX},${tipY} ${b1x},${b1y} ${b2x},${b2y}`;
+}
+
+function render(){
+  const width = PAD*2 + SIZE*CELL;
+  const height = PAD*2 + SIZE*CELL;
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+
+  let html = '';
+
+  for(const s of snakes){
+    const pts = s.cells.map(c=>{ const p = cellPos(c); return `${p.x},${p.y}`; }).join(' ');
+    html += `<g class="piece" data-id="${s.id}">`;
+    html += `<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="${CELL*0.5}" stroke-linecap="square" stroke-linejoin="miter"/>`;
+
+    const head = s.cells[s.cells.length-1];
+    const hp = cellPos(head);
+    const ax = hp.x + s.dir.dx*CELL*0.42;
+    const ay = hp.y + s.dir.dy*CELL*0.42;
+    const pts2 = arrowPolygon(ax, ay, s.dir.dx, s.dir.dy, CELL*0.34);
+    html += `<polygon points="${pts2}" fill="#ffffff" stroke="${s.color}" stroke-width="3" stroke-linejoin="miter"/>`;
+
+    for(let i=0;i<s.cells.length-1;i++){
+      const p1 = cellPos(s.cells[i]);
+      const p2 = cellPos(s.cells[i+1]);
+      const mx=(p1.x+p2.x)/2, my=(p1.y+p2.y)/2;
+      const dx = p2.x-p1.x, dy=p2.y-p1.y;
+      const cp = arrowPolygon(mx,my,dx,dy,CELL*0.13);
+      html += `<polygon points="${cp}" fill="rgba(255,255,255,0.75)"/>`;
+    }
+    html += `</g>`;
+  }
+
+  svg.innerHTML = html;
+
+  svg.querySelectorAll('.piece').forEach(el=>{
+    el.addEventListener('click', ()=> handleClick(parseInt(el.dataset.id)));
+  });
+
+  const remaining = snakes.length;
+  counterEl.textContent = remaining > 0 ? `Piezas restantes: ${remaining}` : '';
+}
+
+function handleClick(id){
+  const idx = snakes.findIndex(s=>s.id===id);
+  if(idx === -1) return;
+  const s = snakes[idx];
+  if(canRemove(s)){
+    for(const c of s.cells) occupied[c.r][c.c] = null;
+    snakes.splice(idx,1);
+    statusEl.textContent = '';
+    statusEl.className = '';
+    render();
+    if(snakes.length === 0){
+      statusEl.textContent = '¡Tablero vacío! 🎉';
+      statusEl.className = 'win';
+    }
+  } else {
+    statusEl.textContent = 'Bloqueada: el camino no está libre 🚫';
+    statusEl.className = 'warn';
+    const el = svg.querySelector(`.piece[data-id="${id}"]`);
+    if(el){
+      el.classList.add('shake');
+      setTimeout(()=> el.classList.remove('shake'), 320);
+    }
+  }
+}
+
+document.getElementById('newBtn').addEventListener('click', generateBoard);
+document.getElementById('resetBtn').addEventListener('click', ()=>{
+  occupied = Array.from({length:SIZE}, ()=> Array(SIZE).fill(null));
+  snakes = snakesInitial.map(s=>({...s, cells:[...s.cells]}));
+  for(const s of snakes) for(const c of s.cells) occupied[c.r][c.c] = s.id;
+  statusEl.textContent = '';
+  statusEl.className = '';
+  render();
+});
+
+generateBoard();
+</script>
+</body>
+</html>
