@@ -927,7 +927,7 @@ function render(){
 // la cola, manteniendo la longitud constante — el efecto de "tirar de una
 // cuerda". Se repite paso a paso hasta que TODA la pieza (cabeza y cola) ha
 // quedado fuera del tablero, y entonces se elimina de verdad.
-const SNAKE_STEP_MS = 65;
+const SNAKE_STEP_MS = 65 / 3;
 
 function animateOut(s){
   const gen = boardGen;
