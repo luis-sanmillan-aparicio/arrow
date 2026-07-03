@@ -883,7 +883,8 @@ function render(){
       const mx=(p1.x+p2.x)/2, my=(p1.y+p2.y)/2;
       const dx = p2.x-p1.x, dy=p2.y-p1.y;
       const cp = arrowPolygon(mx,my,dx,dy,CELL*0.13);
-      html += `<polygon points="${cp}" fill="rgba(255,255,255,0.75)"/>`;
+      
+      html += `<polygon points="${cp}" fill="${s.color}"/>`;
     }
     html += `</g>`;
   }
