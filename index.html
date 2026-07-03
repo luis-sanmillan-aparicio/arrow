@@ -652,6 +652,9 @@ function rellenarHuecos(pieces, occ){
           if(attached) continue;
           // Si de verdad no hay ninguna pieza vecina a la que pegarse (caso
           // extremo), sigue el flujo normal de abajo como último recurso.
+          // NOTA: en ese caso la pieza SÍ queda con cells.length === 1. Esto
+          // es intencional y soportado — ver el "cuadradito" que render()
+          // dibuja para este caso, así que ya no hace falta evitarlo aquí.
         }
 
         // Elige dirección de la flecha (una por cadena).
@@ -858,6 +861,19 @@ function arrowPolygon(mx,my,dx,dy,size){
   return `${tipX},${tipY} ${b1x},${b1y} ${b2x},${b2y}`;
 }
 
+// Cuadradito de base para piezas de una sola celda (sin cuerpo): una
+// <polyline> de un único punto no dibuja ningún trazo visible, así que se
+// dibuja aquí a mano un cuadrado del mismo grosor (CELL*0.5) que tendría el
+// linecap cuadrado de una polyline normal.
+function drawSingleCellBody(cell, color){
+  const p = cellPos(cell);
+  const half = CELL*0.25;
+  const x = (p.x - half).toFixed(2);
+  const y = (p.y - half).toFixed(2);
+  const side = (half*2).toFixed(2);
+  return `<rect x="${x}" y="${y}" width="${side}" height="${side}" fill="${color}"/>`;
+}
+
 function render(){
   const width = PAD*2 + SIZE*CELL;
   const height = PAD*2 + SIZE*CELL;
@@ -866,16 +882,20 @@ function render(){
   let html = '';
 
   for(const s of snakes){
-    const pts = s.cells.map(c=>{ const p = cellPos(c); return `${p.x},${p.y}`; }).join(' ');
     html += `<g class="piece" data-id="${s.id}">`;
-    html += `<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="${CELL*0.5}" stroke-linecap="square" stroke-linejoin="miter"/>`;
+
+    if(s.cells.length === 1){
+      html += drawSingleCellBody(s.cells[0], s.color);
+    } else {
+      const pts = s.cells.map(c=>{ const p = cellPos(c); return `${p.x},${p.y}`; }).join(' ');
+      html += `<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="${CELL*0.5}" stroke-linecap="square" stroke-linejoin="miter"/>`;
+    }
 
     const head = s.cells[s.cells.length-1];
     const hp = cellPos(head);
     const ax = hp.x + s.dir.dx*CELL*0.42;
     const ay = hp.y + s.dir.dy*CELL*0.42;
     const pts2 = arrowPolygon(ax, ay, s.dir.dx, s.dir.dy, CELL*0.34);
-    
     html += `<polygon points="${pts2}" fill="${s.color}" stroke="${s.color}" stroke-width="3" stroke-linejoin="miter"/>`;
 
     for(let i=0;i<s.cells.length-1;i++){
