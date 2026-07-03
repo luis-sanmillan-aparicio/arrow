@@ -60,7 +60,7 @@
   #status.warn{color:#e0552e;}
   #counter{text-align:center;font-size:12px;color:#888;margin-bottom:6px;}
   #boardwrap{width:100%;display:flex;justify-content:center;}
-  svg{display:block;width:100%;height:auto;max-width:900px;}
+  svg{display:block;width:100%;height:auto;max-width:900px;overflow:hidden;}
   .piece{cursor:pointer;}
   .piece.shake{animation:shake .32s;}
   @keyframes shake{
@@ -109,6 +109,7 @@ let CELL = Math.max(14, Math.floor(880 / SIZE));
 let snakesInitial = [];
 let snakes = [];
 let occupied = [];
+let boardGen = 0;
 
 const key = (r,c)=> r+','+c;
 const rnd = n => Math.floor(Math.random()*n);
@@ -762,6 +763,7 @@ function deepClonePieces(pieces){
 }
 
 function generateBoard(){
+  boardGen++;
   // 30x30 has ~900 cells, so the backtracking search is expensive: keep
   // maxLen modest and try only one attempt so this stays fast (~1-3s)
   // instead of the 10-attempt search that made large boards take 30s+
@@ -920,20 +922,65 @@ function render(){
   counterEl.textContent = remaining > 0 ? `Piezas restantes: ${remaining}` : '';
 }
 
+// Mueve la pieza `s` como la serpiente del Nokia: en cada paso se añade una
+// celda nueva en la cabeza (avanzando en s.dir) y se quita la última celda de
+// la cola, manteniendo la longitud constante — el efecto de "tirar de una
+// cuerda". Se repite paso a paso hasta que TODA la pieza (cabeza y cola) ha
+// quedado fuera del tablero, y entonces se elimina de verdad.
+const SNAKE_STEP_MS = 65;
+
+function animateOut(s){
+  const gen = boardGen;
+  s.animating = true;
+
+  function step(){
+    if(gen !== boardGen) return; // el tablero cambió mientras se animaba
+
+    // libera la huella actual en el tablero
+    for(const c of s.cells){
+      if(inBounds(c.r,c.c) && occupied[c.r][c.c] === s.id) occupied[c.r][c.c] = null;
+    }
+
+    // avanza: nueva cabeza al frente, se quita la cola de atrás
+    const head = s.cells[s.cells.length-1];
+    const newHead = { r: head.r + s.dir.dy, c: head.c + s.dir.dx };
+    s.cells.push(newHead);
+    s.cells.shift();
+
+    // vuelve a marcar la huella (solo las celdas que aún caen dentro del tablero)
+    for(const c of s.cells){
+      if(inBounds(c.r,c.c)) occupied[c.r][c.c] = s.id;
+    }
+
+    render();
+
+    const allOut = s.cells.every(c => !inBounds(c.r,c.c));
+    if(allOut){
+      const idx = snakes.findIndex(p=>p.id===s.id);
+      if(idx !== -1) snakes.splice(idx,1);
+      render();
+      if(snakes.length === 0){
+        statusEl.textContent = '¡Tablero vacío! 🎉';
+        statusEl.className = 'win';
+      }
+      return;
+    }
+
+    setTimeout(step, SNAKE_STEP_MS);
+  }
+
+  step();
+}
+
 function handleClick(id){
   const idx = snakes.findIndex(s=>s.id===id);
   if(idx === -1) return;
   const s = snakes[idx];
+  if(s.animating) return; // ya está saliendo, ignora clics mientras tanto
   if(canRemove(s)){
-    for(const c of s.cells) occupied[c.r][c.c] = null;
-    snakes.splice(idx,1);
     statusEl.textContent = '';
     statusEl.className = '';
-    render();
-    if(snakes.length === 0){
-      statusEl.textContent = '¡Tablero vacío! 🎉';
-      statusEl.className = 'win';
-    }
+    animateOut(s);
   } else {
     statusEl.textContent = 'Bloqueada: el camino no está libre 🚫';
     statusEl.className = 'warn';
@@ -947,6 +994,7 @@ function handleClick(id){
 
 document.getElementById('newBtn').addEventListener('click', generateBoard);
 document.getElementById('resetBtn').addEventListener('click', ()=>{
+  boardGen++;
   occupied = Array.from({length:SIZE}, ()=> Array(SIZE).fill(null));
   snakes = snakesInitial.map(s=>({...s, cells:[...s.cells]}));
   for(const s of snakes) for(const c of s.cells) occupied[c.r][c.c] = s.id;
