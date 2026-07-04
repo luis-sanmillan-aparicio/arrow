@@ -874,19 +874,6 @@ function headArrowPolygon(baseX, baseY, dx, dy, tipLen, baseHalf){
   return `${tipX},${tipY} ${b1x},${b1y} ${b2x},${b2y}`;
 }
 
-// Cuadradito de base para piezas de una sola celda (sin cuerpo): una
-// <polyline> de un único punto no dibuja ningún trazo visible, así que se
-// dibuja aquí a mano un cuadrado del mismo grosor (CELL*0.5) que tendría el
-// linecap cuadrado de una polyline normal.
-function drawSingleCellBody(cell, color){
-  const p = cellPos(cell);
-  const half = CELL*0.25;
-  const x = (p.x - half).toFixed(2);
-  const y = (p.y - half).toFixed(2);
-  const side = (half*2).toFixed(2);
-  return `<rect x="${x}" y="${y}" width="${side}" height="${side}" fill="${color}"/>`;
-}
-
 function render(){
   const width = PAD*2 + SIZE*CELL;
   const height = PAD*2 + SIZE*CELL;
@@ -903,7 +890,16 @@ function render(){
     const edgeY = hp.y + s.dir.dy*CELL*0.32;
 
     if(s.cells.length === 1){
-      html += drawSingleCellBody(s.cells[0], s.color);
+      // Igual que en las piezas largas, el cuerpo se dibuja como una
+      // polyline que llega hasta edgeX/edgeY (el mismo punto donde empieza
+      // la base del triángulo), así que encaja sin hueco. La "cola" es aquí
+      // simplemente el centro de la celda desplazado media anchura de trazo
+      // en la dirección OPUESTA a la flecha (no hay `nextCell` del que
+      // deducir la dirección, así que se usa s.dir directamente).
+      const cp = cellPos(s.cells[0]);
+      const tailX = cp.x - s.dir.dx*CELL*0.25;
+      const tailY = cp.y - s.dir.dy*CELL*0.25;
+      html += `<polyline points="${tailX},${tailY} ${edgeX},${edgeY}" fill="none" stroke="${s.color}" stroke-width="${CELL*0.5}" stroke-linecap="butt" stroke-linejoin="miter"/>`;
     } else {
       // El punto del borde se añade como VÉRTICE final de la misma polyline
       // (no como elemento aparte), para que el miter de la esquina lo calcule
