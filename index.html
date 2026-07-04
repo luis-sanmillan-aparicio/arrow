@@ -896,7 +896,7 @@ function render(){
     const head = s.cells[s.cells.length-1];
     const hp = cellPos(head);
     const ax = hp.x + s.dir.dx*CELL*0.16;
-    .const ay = hp.y + s.dir.dy*CELL*0.16;
+    const ay = hp.y + s.dir.dy*CELL*0.16;
     const pts2 = arrowPolygon(ax, ay, s.dir.dx, s.dir.dy, CELL*0.34);
     html += `<polygon points="${pts2}" fill="${s.color}" stroke="${s.color}" stroke-width="3" stroke-linejoin="miter"/>`;
 
