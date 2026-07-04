@@ -853,13 +853,24 @@ function cellPos(cell){
   return { x: PAD + cell.c*CELL + CELL/2, y: PAD + cell.r*CELL + CELL/2 };
 }
 
-function arrowPolygon(mx,my,dx,dy,size){
+function arrowPolygon(mx,my,dx,dy,size,baseHalf){
   const len = Math.hypot(dx,dy) || 1;
   const ux = dx/len, uy = dy/len;
   const px = -uy, py = ux;
+  if(baseHalf === undefined) baseHalf = size*0.55;
   const tipX = mx + ux*size, tipY = my + uy*size;
-  const b1x = mx - ux*size*0.55 + px*size*0.55, b1y = my - uy*size*0.55 + py*size*0.55;
-  const b2x = mx - ux*size*0.55 - px*size*0.55, b2y = my - uy*size*0.55 - py*size*0.55;
+  const b1x = mx - ux*size*0.55 + px*baseHalf, b1y = my - uy*size*0.55 + py*baseHalf;
+  const b2x = mx - ux*size*0.55 - px*baseHalf, b2y = my - uy*size*0.55 - py*baseHalf;
+  return `${tipX},${tipY} ${b1x},${b1y} ${b2x},${b2y}`;
+}
+
+function headArrowPolygon(baseX, baseY, dx, dy, tipLen, baseHalf){
+  const len = Math.hypot(dx,dy) || 1;
+  const ux = dx/len, uy = dy/len;
+  const px = -uy, py = ux;
+  const tipX = baseX + ux*tipLen, tipY = baseY + uy*tipLen;
+  const b1x = baseX + px*baseHalf, b1y = baseY + py*baseHalf;
+  const b2x = baseX - px*baseHalf, b2y = baseY - py*baseHalf;
   return `${tipX},${tipY} ${b1x},${b1y} ${b2x},${b2y}`;
 }
 
@@ -886,19 +897,40 @@ function render(){
   for(const s of snakes){
     html += `<g class="piece" data-id="${s.id}">`;
 
+    const head = s.cells[s.cells.length-1];
+    const hp = cellPos(head);
+    const edgeX = hp.x + s.dir.dx*CELL*0.32;
+    const edgeY = hp.y + s.dir.dy*CELL*0.32;
+
     if(s.cells.length === 1){
       html += drawSingleCellBody(s.cells[0], s.color);
     } else {
-      const pts = s.cells.map(c=>{ const p = cellPos(c); return `${p.x},${p.y}`; }).join(' ');
-      html += `<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="${CELL*0.5}" stroke-linecap="square" stroke-linejoin="miter"/>`;
+      // El punto del borde se añade como VÉRTICE final de la misma polyline
+      // (no como elemento aparte), para que el miter de la esquina lo calcule
+      // el motor SVG de forma coherente con el resto del trazo, sin importar
+      // si la flecha gira respecto a la dirección por la que venía la línea.
+      // Igual que en la cabeza: se añade un vértice extra en la COLA (el
+      // extremo opuesto a la flecha), media anchura de trazo más allá del
+      // centro de su celda, en la dirección opuesta a por donde sale el
+      // resto de la línea. Esto compensa que "butt" ya no prolonga solo ese
+      // extremo (como sí hacía "square"), sin volver a tocar el linecap ni
+      // el extremo de la cabeza, que ya están bien.
+      const tailCell = s.cells[0];
+      const nextCell = s.cells[1];
+      const tp = cellPos(tailCell);
+      const tdx = tailCell.c - nextCell.c;
+      const tdy = tailCell.r - nextCell.r;
+      const tailX = tp.x + tdx*CELL*0.25;
+      const tailY = tp.y + tdy*CELL*0.25;
+
+      const ptsArr = [`${tailX},${tailY}`, ...s.cells.map(c=>{ const p = cellPos(c); return `${p.x},${p.y}`; })];
+      ptsArr.push(`${edgeX},${edgeY}`);
+      const pts = ptsArr.join(' ');
+      html += `<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="${CELL*0.5}" stroke-linecap="butt" stroke-linejoin="miter"/>`;
     }
 
-    const head = s.cells[s.cells.length-1];
-    const hp = cellPos(head);
-    const ax = hp.x + s.dir.dx*CELL*0.16;
-    const ay = hp.y + s.dir.dy*CELL*0.16;
-    const pts2 = arrowPolygon(ax, ay, s.dir.dx, s.dir.dy, CELL*0.34);
-    html += `<polygon points="${pts2}" fill="${s.color}" stroke="${s.color}" stroke-width="3" stroke-linejoin="miter"/>`;
+    const pts2 = headArrowPolygon(edgeX, edgeY, s.dir.dx, s.dir.dy, CELL*0.43, CELL*0.25);
+    html += `<polygon points="${pts2}" fill="${s.color}"/>`;
 
     for(let i=0;i<s.cells.length-1;i++){
       const p1 = cellPos(s.cells[i]);
@@ -1007,3 +1039,4 @@ generateBoard();
 </script>
 </body>
 </html>
+
